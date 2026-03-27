@@ -122,6 +122,20 @@
         .badge-error { background: rgba(255,107,107,0.15); color: var(--error); }
         .badge-transcribing { background: rgba(108,92,231,0.15); color: var(--accent2); }
 
+        /* History item progress bar */
+        .h-progress {
+            width: 100%; height: 3px; background: var(--border);
+            border-radius: 2px; margin-top: 0.35rem; overflow: hidden;
+        }
+        .h-progress-fill {
+            height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent2));
+            border-radius: 2px; width: 0%; transition: width 0.5s ease;
+        }
+        .h-progress-text {
+            font-size: 0.62rem; color: var(--accent2); margin-top: 0.15rem;
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+
         /* Note input */
         .note-input-wrap {
             display: none; padding: 0.3rem 0;
@@ -475,10 +489,11 @@
 
 <script>
 const API = '';
-let taskId = null;
-let pollTimer = null;
+let currentTaskId = null;   // 当前主区域正在查看的任务
+let pollTimer = null;       // 步骤1下载轮询
+let bgPollTimer = null;     // 后台全局轮询（监控所有转写任务）
 let historyCache = [];
-const tasks = {};
+const taskCache = {};       // 缓存各任务状态
 
 // ========== Sidebar ==========
 function toggleSidebar() {
@@ -517,7 +532,7 @@ function renderHistory() {
     list.innerHTML = '';
     historyCache.forEach(h => {
         const div = document.createElement('div');
-        div.className = 'history-item' + (taskId === h.task_id ? ' active' : '');
+        div.className = 'history-item' + (currentTaskId === h.task_id ? ' active' : '');
         div.onclick = () => loadHistoryItem(h);
 
         const badge = getStatusBadge(h.status);
@@ -529,6 +544,12 @@ function renderHistory() {
         let shortUrl = h.url || '';
         try { shortUrl = decodeURIComponent(shortUrl.split('/').pop()); } catch(e) {}
         if (shortUrl.length > 35) shortUrl = shortUrl.slice(0, 32) + '...';
+
+        // 下载中/转写中：显示进度条
+        const isActive = h.status === 'downloading' || h.status === 'transcribing';
+        const cached = taskCache[h.task_id];
+        const progress = (isActive && cached) ? (cached.progress || 0) : 0;
+        const trMsg = (isActive && cached) ? (cached.message || (h.status === 'downloading' ? '下载中...' : '转写中...')) : '';
 
         div.innerHTML = `
             <div class="history-time">${time.slice(5, 16)}</div>
@@ -551,6 +572,10 @@ function renderHistory() {
                     <button class="h-btn danger" onclick="deleteHistory('${h.task_id}')" title="删除">🗑️</button>
                 </div>
             </div>
+            ${isActive ? `
+                <div class="h-progress"><div class="h-progress-fill" style="width:${progress}%"></div></div>
+                <div class="h-progress-text">${trMsg}</div>
+            ` : ''}
             <div class="note-input-wrap" id="note-${h.task_id}">
                 <input class="note-input" placeholder="输入备注，回车保存..."
                     onkeydown="if(event.key==='Enter'){saveNote('${h.task_id}',this);event.preventDefault()}"
@@ -563,10 +588,11 @@ function renderHistory() {
 
 function getStatusBadge(status) {
     const map = {
+        'downloading': '<span class="badge badge-transcribing"><span class="spinner" style="width:10px;height:10px;border-width:1.5px;margin-right:3px"></span>下载中</span>',
         'audio_ready': '<span class="badge badge-ready">音频就绪</span>',
         'video_ready': '<span class="badge badge-ready">视频就绪</span>',
         'completed': '<span class="badge badge-done">已完成</span>',
-        'transcribing': '<span class="badge badge-transcribing">转写中</span>',
+        'transcribing': '<span class="badge badge-transcribing"><span class="spinner" style="width:10px;height:10px;border-width:1.5px;margin-right:3px"></span>转写中</span>',
         'error': '<span class="badge badge-error">失败</span>',
     };
     return map[status] || `<span class="badge">${status}</span>`;
@@ -612,10 +638,9 @@ async function deleteHistory(taskId) {
 }
 
 function loadHistoryItem(h) {
-    if (taskId === h.task_id && tasks[taskId]) return;
-
+    if (pollTimer) clearInterval(pollTimer);
     resetStep(1); resetStep(2); resetStep(3);
-    taskId = h.task_id;
+    currentTaskId = h.task_id;
     document.getElementById('step1Num').className = 'step-num done';
     document.getElementById('urlInput').value = h.url || '';
     if (h.referer) document.getElementById('refererInput').value = h.referer;
@@ -632,10 +657,25 @@ function loadHistoryItem(h) {
         showTextResult({ result: { files: h.files, segments_count: h.segments_count || 0 } });
     }
 
-    // 如果是 audio_ready 状态，确保转写按钮可用
+    // audio_ready：启用转写按钮
     if (h.status === 'audio_ready' && h.audio_file) {
         document.getElementById('transBtn').disabled = false;
         document.getElementById('step2Sub').textContent = '音频已就绪，点击开始转写';
+    }
+
+    // transcribing：恢复转写进度到主区域
+    if (h.status === 'transcribing') {
+        const cached = taskCache[h.task_id] || {};
+        document.getElementById('step2Num').className = 'step-num active';
+        document.getElementById('step2Sub').textContent = '🔄 后台转写中，可以切换到其他任务';
+        document.getElementById('transBtn').disabled = true;
+        document.getElementById('transBtn').innerHTML = '🤖 后台转写中...';
+        showEl('trProgress');
+        document.getElementById('trBar').style.width = (cached.progress || 0) + '%';
+        document.getElementById('trPercent').textContent = (cached.progress || 0) + '%';
+        document.getElementById('trMsg').textContent = cached.message || '转写中...';
+        document.getElementById('trStatus').textContent = '🤖 转写中...';
+        startPollingCurrentTask();
     }
 
     renderHistory();
@@ -670,7 +710,8 @@ async function startDownload(mode) {
         });
         const data = await resp.json();
         if (data.error) { showDlError(data.error); return; }
-        taskId = data.task_id;
+        currentTaskId = data.task_id;
+        loadHistory();  // 立即刷新历史，显示下载中状态
         pollStep1(mode);
     } catch (e) {
         showDlError('无法连接服务器');
@@ -680,7 +721,7 @@ async function startDownload(mode) {
 function pollStep1(mode) {
     if (pollTimer) clearInterval(pollTimer);
     pollTimer = setInterval(async () => {
-        const data = await getTask();
+        const data = await getTaskStatus(currentTaskId);
         if (!data) return;
 
         const { status, progress, message } = data;
@@ -726,6 +767,7 @@ function showAudioResult(data) {
     }
 
     document.getElementById('transBtn').disabled = false;
+    document.getElementById('transBtn').innerHTML = '🤖 开始转写';
     document.getElementById('step2Sub').textContent = '音频已就绪，点击开始转写';
 }
 
@@ -756,18 +798,14 @@ function showDlError(msg) {
     document.getElementById('urlInput').disabled = false;
 }
 
-// ========== 步骤 2：语音转文字 ==========
+// ========== 步骤 2：语音转文字（提交到后台，立即释放） ==========
 async function startTranscribe() {
-    if (!taskId) return;
+    if (!currentTaskId) return;
     const btn = document.getElementById('transBtn');
     btn.disabled = true;
-    btn.innerHTML = '<span class="spinner"></span> 转写中...';
-    hideEl('trError');
-    showEl('trProgress');
-    resetStep(3);
 
     try {
-        const url = API + '/api/task/' + taskId + '/transcribe';
+        const url = API + '/api/task/' + currentTaskId + '/transcribe';
         const resp = await fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -780,31 +818,50 @@ async function startTranscribe() {
         }
         const data = await resp.json();
         if (data.error) { showTrError(data.error); return; }
-        pollStep2();
+
+        // ✅ 转写已提交后台 — 立即释放主区域
+        btn.innerHTML = '🤖 后台转写中...';
+        document.getElementById('step2Sub').textContent = '🔄 已提交后台转写，可以继续操作新任务';
+
+        // 在主区域也显示进度条
+        showEl('trProgress');
+        document.getElementById('trBar').style.width = '0%';
+        document.getElementById('trPercent').textContent = '0%';
+        document.getElementById('trMsg').textContent = '后台转写已启动...';
+        document.getElementById('trStatus').textContent = '🤖 转写中...';
+        startPollingCurrentTask();
+
+        // 立即刷新历史记录（后端已更新为 transcribing 状态）
+        await loadHistory();
+
     } catch (e) {
         showTrError('请求失败: ' + e.message);
     }
 }
 
-function pollStep2() {
-    if (pollTimer) clearInterval(pollTimer);
-    pollTimer = setInterval(async () => {
-        const data = await getTask();
-        if (!data) return;
+// 轮询当前主区域正在查看的转写任务
+function startPollingCurrentTask() {
+    // 不用 clearInterval(pollTimer)，下载和转写用不同的轮询
+    if (window._currentTaskPoller) clearInterval(window._currentTaskPoller);
+    window._currentTaskPoller = setInterval(async () => {
+        if (!currentTaskId) return;
+        const cached = taskCache[currentTaskId];
+        if (!cached || cached.status === 'completed' || cached.status === 'error') {
+            clearInterval(window._currentTaskPoller);
+            return;
+        }
+        // 更新主区域进度
+        document.getElementById('trBar').style.width = (cached.progress || 0) + '%';
+        document.getElementById('trPercent').textContent = (cached.progress || 0) + '%';
+        document.getElementById('trMsg').textContent = cached.message || '转写中...';
 
-        const { status, progress, message } = data;
-        document.getElementById('trBar').style.width = progress + '%';
-        document.getElementById('trPercent').textContent = progress + '%';
-        document.getElementById('trMsg').textContent = message;
-        document.getElementById('trStatus').textContent = '🤖 转写中...';
-
-        if (status === 'completed') {
-            clearInterval(pollTimer);
-            showTextResult(data);
+        if (cached.status === 'completed') {
+            clearInterval(window._currentTaskPoller);
+            showTextResult({ result: cached.result || {} });
             loadHistory();
-        } else if (status === 'error') {
-            clearInterval(pollTimer);
-            showTrError(message);
+        } else if (cached.status === 'error') {
+            clearInterval(window._currentTaskPoller);
+            showTrError(cached.message || '转写失败');
             loadHistory();
         }
     }, 2000);
@@ -815,6 +872,7 @@ function showTextResult(data) {
     document.getElementById('step2Num').className = 'step-num done';
     document.getElementById('step3Num').className = 'step-num active';
     document.getElementById('step2Sub').textContent = '✅ 转写完成';
+    document.getElementById('transBtn').innerHTML = '✅ 转写完成';
     document.getElementById('step3Sub').textContent = '可查看和下载逐字稿';
     showEl('textResult');
 
@@ -841,12 +899,42 @@ function showTrError(msg) {
     document.getElementById('transBtn').innerHTML = '🤖 开始转写';
 }
 
+// ========== 后台全局轮询：监控所有活跃任务 ==========
+function startBgPolling() {
+    bgPollTimer = setInterval(async () => {
+        // 找出所有活跃任务（下载中 + 转写中）
+        const activeTasks = historyCache.filter(h => h.status === 'downloading' || h.status === 'transcribing');
+        if (activeTasks.length === 0) return;
+
+        // 批量查询状态
+        let historyChanged = false;
+        for (const h of activeTasks) {
+            const data = await getTaskStatus(h.task_id);
+            if (!data) continue;
+            taskCache[h.task_id] = data;
+
+            // 状态变化时需要刷新历史
+            if (data.status !== h.status) {
+                historyChanged = true;
+            }
+        }
+
+        // 有任务状态变化，刷新历史列表
+        if (historyChanged) {
+            await loadHistory();
+        } else {
+            // 没变化，但更新进度条显示
+            renderHistory();
+        }
+    }, 3000);
+}
+
 // ========== 通用 ==========
-async function getTask() {
+async function getTaskStatus(tid) {
     try {
-        const resp = await fetch(API + '/api/task/' + taskId);
+        const resp = await fetch(API + '/api/task/' + tid);
         const data = await resp.json();
-        tasks[taskId] = data;
+        taskCache[tid] = data;
         return data;
     } catch { return null; }
 }
@@ -933,6 +1021,7 @@ document.getElementById('urlInput').addEventListener('keydown', e => {
 
 // 初始化
 loadHistory();
+startBgPolling();
 </script>
 
 </body>

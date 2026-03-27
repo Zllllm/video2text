@@ -588,6 +588,10 @@ def create_task():
         'language': language,
     }
 
+    # 立即创建历史记录，让侧栏能实时看到
+    add_history_record(task_id, url, 'downloading',
+                       message='开始下载...', referer=referer)
+
     thread = threading.Thread(target=process_video, args=(task_id, url, referer, language, mode))
     thread.daemon = True
     thread.start()
@@ -624,6 +628,12 @@ def start_transcribe(task_id):
 
     data = request.json or {}
     language = data.get('language', '').strip() or task.get('language') or None
+
+    # 立即更新状态和历史记录
+    update_task(task_id, status='transcribing', message='后台转写已启动...', progress=0)
+    add_history_record(task_id, task.get('url', ''), 'transcribing',
+                       message='后台转写已启动...', audio_file=task.get('audio_file'),
+                       duration=task.get('duration', 0), referer=task.get('referer'))
 
     thread = threading.Thread(target=process_transcribe, args=(task_id, language))
     thread.daemon = True
