@@ -1,0 +1,36 @@
+# 输出文件
+output/
+
+# 临时脚本（早期开发用）
+capture_m3u8.py
+capture_safari.py
+setup.sh
+transcribe.sh
+
+# 付费文档（不开源）
+小红书付费文档.md
+
+# Python
+*.pyc
+__pycache__/
+*.egg-info/
+
+# 系统文件
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# 环境
+.venv/
+venv/
+env/
+
+# WorkBuddy
+.workbuddy/
+
+# 媒体文件
+*.mp3
+*.wav
+*.mp4

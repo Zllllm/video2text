@@ -1,0 +1,939 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Video2Text - 视频课程转文字</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        :root {
+            --bg: #0f0f14; --card: #22222e; --border: #333344;
+            --text: #e8e8ed; --text2: #9999aa;
+            --accent: #6c5ce7; --accent2: #a29bfe;
+            --success: #00cec9; --error: #ff6b6b; --warning: #fdcb6e;
+            --sidebar-w: 320px;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg); color: var(--text); min-height: 100vh;
+        }
+
+        /* Layout */
+        .layout { display: flex; min-height: 100vh; }
+        .sidebar {
+            width: var(--sidebar-w); background: #181820; border-right: 1px solid var(--border);
+            display: flex; flex-direction: column; flex-shrink: 0;
+            position: fixed; top: 0; left: 0; bottom: 0; z-index: 100;
+            transition: transform 0.3s;
+        }
+        .sidebar.collapsed { transform: translateX(-100%); }
+        .main {
+            flex: 1; margin-left: var(--sidebar-w);
+            min-width: 0;
+            transition: margin-left 0.3s;
+        }
+        .main.full { margin-left: 0; }
+
+        /* Sidebar toggle - 悬浮☰按钮 */
+        .sidebar-toggle {
+            position: fixed; top: 0.75rem; left: 0.75rem; z-index: 200;
+            width: 40px; height: 40px; border-radius: 10px;
+            background: var(--card); border: 1px solid var(--border);
+            color: var(--text2); cursor: pointer; font-size: 1.2rem;
+            display: flex; align-items: center; justify-content: center;
+            transition: all 0.3s; box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+        }
+        .sidebar-toggle:hover { color: var(--accent2); border-color: var(--accent2); }
+        /* 侧栏打开时隐藏按钮 */
+        .sidebar:not(.collapsed) ~ .main .sidebar-toggle,
+        .sidebar.show ~ .main .sidebar-toggle { opacity: 0; pointer-events: none; }
+
+        /* Sidebar header */
+        .sidebar-header {
+            padding: 1rem; border-bottom: 1px solid var(--border);
+            display: flex; align-items: center; justify-content: space-between;
+        }
+        .sidebar-header h2 { font-size: 0.95rem; font-weight: 600; }
+        .sidebar-header .close-btn {
+            background: none; border: none; color: var(--text2); cursor: pointer;
+            font-size: 1.2rem; padding: 0.2rem; line-height: 1;
+        }
+        .sidebar-header .close-btn:hover { color: var(--text); }
+
+        /* History list */
+        .history-list {
+            flex: 1; overflow-y: auto; padding: 0.5rem;
+        }
+        .history-list::-webkit-scrollbar { width: 4px; }
+        .history-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+        .history-item {
+            padding: 0.75rem; border-radius: 10px; margin-bottom: 0.4rem;
+            background: var(--card); border: 1px solid transparent;
+            cursor: pointer; transition: all 0.2s;
+        }
+        .history-item:hover { border-color: var(--border); }
+        .history-item.active { border-color: var(--accent); background: rgba(108,92,231,0.1); }
+
+        /* 历史记录结构：时间 → URL → 备注 → 状态 + 操作 */
+        .history-time {
+            font-size: 0.68rem; color: var(--text2); margin-bottom: 0.2rem;
+            font-family: monospace;
+        }
+        .history-url {
+            font-size: 0.78rem; color: var(--text); overflow: hidden;
+            text-overflow: ellipsis; white-space: nowrap; margin-bottom: 0.3rem;
+            font-weight: 500;
+        }
+        .history-note {
+            font-size: 0.75rem; color: var(--warning); margin-bottom: 0.3rem;
+            padding: 0.2rem 0.4rem; background: rgba(253,203,110,0.08);
+            border-radius: 4px; overflow: hidden; text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .history-bottom {
+            display: flex; align-items: center; justify-content: space-between;
+            gap: 0.3rem;
+        }
+        .history-meta {
+            display: flex; align-items: center; gap: 0.4rem;
+            font-size: 0.68rem; color: var(--text2);
+        }
+        .history-actions {
+            display: flex; gap: 0.2rem; opacity: 0;
+            transition: opacity 0.2s;
+        }
+        .history-item:hover .history-actions { opacity: 1; }
+        .h-btn {
+            padding: 0.15rem 0.4rem; font-size: 0.68rem; border-radius: 4px;
+            border: 1px solid var(--border); background: transparent;
+            color: var(--text2); cursor: pointer; text-decoration: none;
+            transition: all 0.15s; display: inline-flex; align-items: center; gap: 0.15rem;
+        }
+        .h-btn:hover { border-color: var(--accent2); color: var(--accent2); }
+        .h-btn.danger:hover { border-color: var(--error); color: var(--error); }
+
+        /* Status badge */
+        .badge {
+            display: inline-block; padding: 0.1rem 0.35rem; border-radius: 4px;
+            font-size: 0.65rem; font-weight: 600;
+        }
+        .badge-ready { background: rgba(0,206,201,0.15); color: var(--success); }
+        .badge-done { background: rgba(0,206,201,0.2); color: var(--success); }
+        .badge-error { background: rgba(255,107,107,0.15); color: var(--error); }
+        .badge-transcribing { background: rgba(108,92,231,0.15); color: var(--accent2); }
+
+        /* Note input */
+        .note-input-wrap {
+            display: none; padding: 0.3rem 0;
+        }
+        .note-input-wrap.show { display: block; }
+        .note-input {
+            width: 100%; padding: 0.35rem 0.5rem; font-size: 0.75rem;
+            background: var(--bg); border: 1px solid var(--border);
+            border-radius: 4px; color: var(--text); outline: none;
+        }
+        .note-input:focus { border-color: var(--accent2); }
+        .note-input::placeholder { color: var(--text2); }
+
+        /* Empty state */
+        .empty-state {
+            text-align: center; padding: 2rem 1rem; color: var(--text2); font-size: 0.82rem;
+        }
+
+        /* Header */
+        .header {
+            background: linear-gradient(135deg, var(--accent), #8b5cf6);
+            padding: 1.5rem 2rem; text-align: center;
+        }
+        .header h1 { font-size: 1.6rem; font-weight: 700; margin-bottom: 0.3rem; }
+        .header p { color: rgba(255,255,255,0.8); font-size: 0.9rem; }
+        .container { max-width: 900px; margin: 0 auto; padding: 1.5rem; }
+
+        /* Card */
+        .card {
+            background: var(--card); border: 1px solid var(--border);
+            border-radius: 16px; padding: 1.5rem; margin-bottom: 1rem;
+        }
+        .card-header {
+            display: flex; align-items: center; gap: 0.75rem;
+            margin-bottom: 1rem;
+        }
+        .step-num {
+            width: 36px; height: 36px; border-radius: 50%;
+            background: var(--border); color: var(--text2);
+            display: flex; align-items: center; justify-content: center;
+            font-weight: 700; font-size: 0.9rem; flex-shrink: 0;
+            transition: all 0.3s;
+        }
+        .step-num.active { background: var(--accent); color: white; }
+        .step-num.done { background: var(--success); color: var(--bg); }
+        .step-title { font-weight: 600; font-size: 1rem; }
+        .step-subtitle { font-size: 0.8rem; color: var(--text2); }
+
+        /* Input */
+        .input-row { display: flex; gap: 0.75rem; }
+        .input-row input {
+            flex: 1; padding: 0.75rem 1rem; background: var(--bg);
+            border: 1px solid var(--border); border-radius: 10px;
+            color: var(--text); font-size: 0.9rem; outline: none;
+        }
+        .input-row input:focus { border-color: var(--accent2); }
+        .input-row input::placeholder { color: var(--text2); }
+        .input-row input:disabled { opacity: 0.5; }
+
+        /* Buttons */
+        .btn {
+            padding: 0.75rem 1.5rem; border: none; border-radius: 10px;
+            font-size: 0.9rem; font-weight: 600; cursor: pointer;
+            transition: all 0.2s; white-space: nowrap; display: inline-flex;
+            align-items: center; gap: 0.4rem; text-decoration: none;
+        }
+        .btn:active { transform: scale(0.97); }
+        .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+        .btn-primary { background: var(--accent); color: white; }
+        .btn-primary:hover:not(:disabled) { background: var(--accent2); }
+        .btn-success { background: var(--success); color: var(--bg); }
+        .btn-success:hover:not(:disabled) { background: #00e5df; }
+        .btn-ghost {
+            background: transparent; color: var(--text2);
+            border: 1px solid var(--border);
+        }
+        .btn-ghost:hover:not(:disabled) { border-color: var(--accent2); color: var(--accent2); }
+
+        /* Progress bar */
+        .progress-wrap { margin-top: 1rem; display: none; }
+        .progress-wrap.show { display: block; }
+        .progress-info {
+            display: flex; justify-content: space-between; align-items: center;
+            margin-bottom: 0.5rem; font-size: 0.82rem;
+        }
+        .progress-bar-bg {
+            width: 100%; height: 6px; background: var(--bg);
+            border-radius: 3px; overflow: hidden;
+        }
+        .progress-bar-fill {
+            height: 100%; background: linear-gradient(90deg, var(--accent), var(--success));
+            border-radius: 3px; width: 0%; transition: width 0.3s ease;
+        }
+        .progress-msg { color: var(--text2); font-size: 0.8rem; margin-top: 0.4rem; }
+
+        /* Result box */
+        .result-box {
+            margin-top: 1rem; padding: 1rem; background: var(--bg);
+            border-radius: 10px; display: none;
+        }
+        .result-box.show { display: block; }
+        .result-info {
+            display: flex; gap: 1rem; flex-wrap: wrap;
+            margin-bottom: 0.75rem; font-size: 0.82rem;
+        }
+        .result-info span { color: var(--text2); }
+        .result-info strong { color: var(--success); }
+
+        /* Audio player */
+        audio {
+            width: 100%; margin: 0.75rem 0; border-radius: 8px;
+            max-height: 40px;
+        }
+
+        /* Downloads */
+        .downloads {
+            display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.75rem;
+        }
+        .btn-dl {
+            padding: 0.4rem 0.8rem; background: var(--bg); color: var(--text);
+            border: 1px solid var(--border); border-radius: 8px;
+            font-size: 0.78rem; cursor: pointer; text-decoration: none;
+            transition: all 0.2s; display: inline-flex; align-items: center; gap: 0.3rem;
+        }
+        .btn-dl:hover { border-color: var(--accent2); color: var(--accent2); }
+        .btn-dl.accent {
+            background: var(--accent); color: white; border-color: var(--accent);
+            font-weight: 600;
+        }
+        .btn-dl.accent:hover { background: var(--accent2); border-color: var(--accent2); color: white; }
+
+        /* Tabs */
+        .tabs {
+            display: flex; gap: 0.25rem; margin-bottom: 0.75rem;
+            border-bottom: 1px solid var(--border); padding-bottom: 0.5rem;
+        }
+        .tab {
+            padding: 0.4rem 0.8rem; border-radius: 6px 6px 0 0; cursor: pointer;
+            font-size: 0.8rem; color: var(--text2); background: transparent;
+            border: none; transition: all 0.2s;
+        }
+        .tab:hover { color: var(--text); }
+        .tab.active { color: white; background: var(--accent); }
+        .tab-content {
+            display: none; max-height: 400px; overflow-y: auto;
+            padding: 0.75rem; background: var(--bg); border-radius: 8px;
+            font-size: 0.85rem; line-height: 1.8;
+        }
+        .tab-content.active { display: block; }
+        .tab-content::-webkit-scrollbar { width: 5px; }
+        .tab-content::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+        .timestamp { color: var(--accent2); font-weight: 600; font-size: 0.8rem; margin-right: 0.4rem; }
+        .md-content h1,.md-content h2,.md-content h3 { color: var(--accent2); margin: 0.8rem 0 0.4rem; }
+        .md-content h1 { font-size: 1.1rem; }
+        .md-content h2 { font-size: 0.95rem; }
+        .md-content hr { border: none; border-top: 1px solid var(--border); margin: 0.8rem 0; }
+        .md-content blockquote {
+            border-left: 3px solid var(--accent); padding-left: 0.6rem;
+            color: var(--text2); font-style: italic; margin: 0.4rem 0;
+        }
+        .md-content em { color: var(--text2); font-size: 0.78rem; }
+
+        /* Error */
+        .error-msg {
+            color: var(--error); font-size: 0.85rem; margin-top: 0.75rem;
+            padding: 0.75rem; background: rgba(255,107,107,0.08);
+            border-radius: 8px; display: none;
+        }
+        .error-msg.show { display: block; }
+
+        /* Advanced */
+        .advanced { margin-top: 0.75rem; display: none; }
+        .advanced.show { display: block; }
+        .advanced .input-row { margin-bottom: 0; }
+        .hint { font-size: 0.78rem; color: var(--text2); margin-top: 0.5rem; line-height: 1.4; }
+        .hint code { background: var(--bg); padding: 0.1rem 0.3rem; border-radius: 3px; font-size: 0.75rem; }
+        .toggle-link {
+            color: var(--accent2); font-size: 0.78rem; cursor: pointer;
+            text-decoration: none; margin-top: 0.6rem; display: inline-block;
+        }
+        .toggle-link:hover { text-decoration: underline; }
+
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .spinner {
+            display: inline-block; width: 14px; height: 14px;
+            border: 2px solid var(--border); border-top-color: var(--accent2);
+            border-radius: 50%; animation: spin 0.8s linear infinite;
+            vertical-align: middle;
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .sidebar { transform: translateX(-100%); }
+            .sidebar.show { transform: translateX(0); }
+            .main { margin-left: 0 !important; }
+            .input-row { flex-direction: column; }
+            .header h1 { font-size: 1.3rem; }
+            .sidebar-header { padding-top: 2.5rem; }
+        }
+    </style>
+</head>
+<body>
+
+<div class="layout">
+    <!-- ========== 左侧栏：历史记录 ========== -->
+    <div class="sidebar collapsed" id="sidebar">
+        <div class="sidebar-header">
+            <h2>📂 历史记录</h2>
+            <button class="close-btn" onclick="toggleSidebar()">✕</button>
+        </div>
+        <div class="history-list" id="historyList">
+            <div class="empty-state" id="emptyState">暂无记录<br><small>完成任务后将自动保存</small></div>
+        </div>
+    </div>
+
+    <!-- ========== 右侧主区域 ========== -->
+    <div class="main" id="mainArea">
+
+        <!-- 悬浮☰按钮 - 侧栏关闭时显示，打开时隐藏 -->
+        <button class="sidebar-toggle" id="sidebarToggle" onclick="toggleSidebar()">☰</button>
+
+        <div class="header">
+            <h1>🎬 Video2Text</h1>
+            <p>粘贴视频链接 → 下载视频/音频 → 语音转文字 → Markdown 逐字稿</p>
+        </div>
+
+        <div class="container">
+
+            <!-- ========== 步骤 1：下载视频/音频 ========== -->
+            <div class="card" id="step1Card">
+                <div class="card-header">
+                    <div class="step-num active" id="step1Num">1</div>
+                    <div>
+                        <div class="step-title">下载视频/音频</div>
+                        <div class="step-subtitle">输入视频 m3u8/mp4 地址，下载 MP4 视频或 MP3 音频</div>
+                    </div>
+                </div>
+                <div class="input-row">
+                    <input type="text" id="urlInput" placeholder="粘贴视频地址，如 https://.../*.m3u8" />
+                    <button class="btn btn-primary" id="dlBtn" onclick="startDownload('audio')">🎵 下载 MP3</button>
+                    <button class="btn btn-ghost" id="dlMp4Btn" onclick="startDownload('video')">🎬 下载 MP4</button>
+                </div>
+                <div class="hint">
+                    💡 获取方法：浏览器播放视频 → <code>⌘+Option+I</code> → Network → 过滤 <code>m3u8</code> → 复制请求 URL
+                </div>
+                <a class="toggle-link" onclick="toggleAdvanced()">⚙️ 高级选项（Referer）</a>
+                <div class="advanced" id="advancedBox">
+                    <div class="input-row">
+                        <input type="text" id="refererInput" placeholder="Referer 地址（部分平台需要）" />
+                    </div>
+                </div>
+
+                <!-- 下载进度 -->
+                <div class="progress-wrap" id="dlProgress">
+                    <div class="progress-info">
+                        <span id="dlStatus">下载中...</span>
+                        <span id="dlPercent" style="color:var(--accent2)">0%</span>
+                    </div>
+                    <div class="progress-bar-bg"><div class="progress-bar-fill" id="dlBar"></div></div>
+                    <div class="progress-msg" id="dlMsg">准备下载...</div>
+                </div>
+                <div class="error-msg" id="dlError"></div>
+
+                <!-- 音频结果 -->
+                <div class="result-box" id="audioResult">
+                    <div class="result-info">
+                        <span>✅ 音频已就绪 ·</span>
+                        <span>时长: <strong id="audioDuration">-</strong></span>
+                        <span>大小: <strong id="audioSize">-</strong></span>
+                    </div>
+                    <audio id="audioPlayer" controls></audio>
+                    <div class="downloads">
+                        <a class="btn-dl accent" id="dlMp3" href="#" download>🎵 下载 MP3</a>
+                    </div>
+                </div>
+
+                <!-- 视频结果 -->
+                <div class="result-box" id="videoResult">
+                    <div class="result-info">
+                        <span>✅ 视频已就绪 ·</span>
+                        <span>大小: <strong id="videoSize">-</strong></span>
+                    </div>
+                    <video id="videoPlayer" controls style="width:100%;max-height:300px;border-radius:8px;margin:0.5rem 0"></video>
+                    <div class="downloads">
+                        <a class="btn-dl accent" id="dlMp4" href="#" download>🎬 下载 MP4</a>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ========== 步骤 2：语音转文字 ========== -->
+            <div class="card" id="step2Card">
+                <div class="card-header">
+                    <div class="step-num" id="step2Num">2</div>
+                    <div>
+                        <div class="step-title">语音转文字</div>
+                        <div class="step-subtitle" id="step2Sub">请先下载音频（步骤1）</div>
+                    </div>
+                </div>
+                <button class="btn btn-success" id="transBtn" onclick="startTranscribe()" disabled>
+                    🤖 开始转写
+                </button>
+
+                <!-- 转写进度 -->
+                <div class="progress-wrap" id="trProgress">
+                    <div class="progress-info">
+                        <span id="trStatus">转写中...</span>
+                        <span id="trPercent" style="color:var(--accent2)">0%</span>
+                    </div>
+                    <div class="progress-bar-bg"><div class="progress-bar-fill" id="trBar"></div></div>
+                    <div class="progress-msg" id="trMsg">准备转写...</div>
+                </div>
+                <div class="error-msg" id="trError"></div>
+            </div>
+
+            <!-- ========== 步骤 3：查看结果 ========== -->
+            <div class="card" id="step3Card">
+                <div class="card-header">
+                    <div class="step-num" id="step3Num">3</div>
+                    <div>
+                        <div class="step-title">Markdown 逐字稿</div>
+                        <div class="step-subtitle" id="step3Sub">等待转写完成</div>
+                    </div>
+                </div>
+                <div class="result-box" id="textResult">
+                    <div class="result-info">
+                        <span>✅ 转写完成 ·</span>
+                        <span>段落: <strong id="segCount">-</strong></span>
+                    </div>
+                    <div class="tabs">
+                        <button class="tab active" onclick="switchTab(this,'summary')">📋 摘要</button>
+                        <button class="tab" onclick="switchTab(this,'transcript')">📝 逐字稿</button>
+                        <button class="tab" onclick="switchTab(this,'text')">📄 纯文本</button>
+                    </div>
+                    <div class="tab-content active" id="tab-summary"></div>
+                    <div class="tab-content" id="tab-transcript"></div>
+                    <div class="tab-content" id="tab-text"></div>
+                    <div class="downloads">
+                        <a class="btn-dl accent" id="dlMd" href="#">📥 Markdown</a>
+                        <a class="btn-dl" id="dlSummary" href="#">📋 摘要</a>
+                        <a class="btn-dl" id="dlSrt" href="#">💬 SRT</a>
+                        <a class="btn-dl" id="dlTxt" href="#">📄 纯文本</a>
+                        <a class="btn-dl" id="dlMp3_2" href="#">🎵 MP3</a>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </div>
+</div>
+
+<script>
+const API = '';
+let taskId = null;
+let pollTimer = null;
+let historyCache = [];
+const tasks = {};
+
+// ========== Sidebar ==========
+function toggleSidebar() {
+    const sb = document.getElementById('sidebar');
+    const main = document.getElementById('mainArea');
+    const isOpen = sb.classList.contains('show');
+    if (isOpen) {
+        sb.classList.remove('show');
+        sb.classList.add('collapsed');
+        main.classList.add('full');
+    } else {
+        sb.classList.remove('collapsed');
+        sb.classList.add('show');
+        main.classList.remove('full');
+    }
+}
+
+// ========== 历史记录 ==========
+async function loadHistory() {
+    try {
+        const resp = await fetch(API + '/api/history');
+        const data = await resp.json();
+        historyCache = data.history || [];
+        renderHistory();
+    } catch (e) {}
+}
+
+function renderHistory() {
+    const list = document.getElementById('historyList');
+
+    if (historyCache.length === 0) {
+        list.innerHTML = '<div class="empty-state">暂无记录<br><small>完成任务后将自动保存</small></div>';
+        return;
+    }
+
+    list.innerHTML = '';
+    historyCache.forEach(h => {
+        const div = document.createElement('div');
+        div.className = 'history-item' + (taskId === h.task_id ? ' active' : '');
+        div.onclick = () => loadHistoryItem(h);
+
+        const badge = getStatusBadge(h.status);
+        const time = h.created_at || '';
+        const dur = h.duration ? `${Math.round(h.duration/60)}分钟` : '';
+        const segs = h.segments_count ? `${h.segments_count}段` : '';
+
+        // URL - 提取文件名
+        let shortUrl = h.url || '';
+        try { shortUrl = decodeURIComponent(shortUrl.split('/').pop()); } catch(e) {}
+        if (shortUrl.length > 35) shortUrl = shortUrl.slice(0, 32) + '...';
+
+        div.innerHTML = `
+            <div class="history-time">${time.slice(5, 16)}</div>
+            <div class="history-url" title="${escHtml(h.url)}">${escHtml(shortUrl)}</div>
+            ${h.note ? `<div class="history-note">💬 ${escHtml(h.note)}</div>` : ''}
+            <div class="history-bottom">
+                <div class="history-meta">
+                    ${badge}
+                    ${dur ? `<span>${dur}</span>` : ''}
+                    ${segs ? `<span>${segs}</span>` : ''}
+                </div>
+                <div class="history-actions" onclick="event.stopPropagation()">
+                    ${h.audio_file ? `<a class="h-btn" href="${API}/api/files/${h.audio_file}" title="下载 MP3">🎵</a>` : ''}
+                    ${h.video_file ? `<a class="h-btn" href="${API}/api/files/${h.video_file}" title="下载 MP4">🎬</a>` : ''}
+                    ${h.files ? `
+                        <a class="h-btn" href="${API}/api/files/${h.files.markdown}" title="下载逐字稿">📝</a>
+                        <a class="h-btn" href="${API}/api/files/${h.files.summary}" title="下载摘要">📋</a>
+                    ` : ''}
+                    <button class="h-btn" onclick="editNote('${h.task_id}')" title="编辑备注">✏️</button>
+                    <button class="h-btn danger" onclick="deleteHistory('${h.task_id}')" title="删除">🗑️</button>
+                </div>
+            </div>
+            <div class="note-input-wrap" id="note-${h.task_id}">
+                <input class="note-input" placeholder="输入备注，回车保存..."
+                    onkeydown="if(event.key==='Enter'){saveNote('${h.task_id}',this);event.preventDefault()}"
+                    onblur="saveNote('${h.task_id}', this)" />
+            </div>
+        `;
+        list.appendChild(div);
+    });
+}
+
+function getStatusBadge(status) {
+    const map = {
+        'audio_ready': '<span class="badge badge-ready">音频就绪</span>',
+        'video_ready': '<span class="badge badge-ready">视频就绪</span>',
+        'completed': '<span class="badge badge-done">已完成</span>',
+        'transcribing': '<span class="badge badge-transcribing">转写中</span>',
+        'error': '<span class="badge badge-error">失败</span>',
+    };
+    return map[status] || `<span class="badge">${status}</span>`;
+}
+
+function escHtml(s) {
+    if (!s) return '';
+    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function editNote(taskId) {
+    const wrap = document.getElementById('note-' + taskId);
+    wrap.classList.toggle('show');
+    if (wrap.classList.contains('show')) {
+        const input = wrap.querySelector('input');
+        const h = historyCache.find(x => x.task_id === taskId);
+        input.value = h ? (h.note || '') : '';
+        setTimeout(() => input.focus(), 50);
+    }
+}
+
+async function saveNote(taskId, input) {
+    const note = input.value.trim();
+    const h = historyCache.find(x => x.task_id === taskId);
+    if (h) h.note = note;
+    try {
+        await fetch(API + '/api/history/' + taskId + '/note', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ note })
+        });
+    } catch (e) {}
+    renderHistory();
+}
+
+async function deleteHistory(taskId) {
+    if (!confirm('确定删除这条记录？')) return;
+    historyCache = historyCache.filter(x => x.task_id !== taskId);
+    renderHistory();
+    try {
+        await fetch(API + '/api/history/' + taskId, { method: 'DELETE' });
+    } catch (e) {}
+}
+
+function loadHistoryItem(h) {
+    if (taskId === h.task_id && tasks[taskId]) return;
+
+    resetStep(1); resetStep(2); resetStep(3);
+    taskId = h.task_id;
+    document.getElementById('step1Num').className = 'step-num done';
+    document.getElementById('urlInput').value = h.url || '';
+    if (h.referer) document.getElementById('refererInput').value = h.referer;
+
+    if (h.audio_file) {
+        showAudioResult({ duration: h.duration || 0, audio_file: h.audio_file });
+    }
+    if (h.video_file) {
+        showVideoResult({ video_file: h.video_file });
+    }
+
+    if (h.status === 'completed' && h.files) {
+        showAudioResult({ duration: h.duration || 0, audio_file: h.audio_file });
+        showTextResult({ result: { files: h.files, segments_count: h.segments_count || 0 } });
+    }
+
+    // 如果是 audio_ready 状态，确保转写按钮可用
+    if (h.status === 'audio_ready' && h.audio_file) {
+        document.getElementById('transBtn').disabled = false;
+        document.getElementById('step2Sub').textContent = '音频已就绪，点击开始转写';
+    }
+
+    renderHistory();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+// ========== 步骤 1：下载视频/音频 ==========
+async function startDownload(mode) {
+    const url = document.getElementById('urlInput').value.trim();
+    if (!url) return alert('请输入视频地址');
+
+    const btn = document.getElementById('dlBtn');
+    const btnMp4 = document.getElementById('dlMp4Btn');
+    btn.disabled = true; btnMp4.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> 下载中';
+    btnMp4.innerHTML = '<span class="spinner"></span> 下载中';
+    document.getElementById('urlInput').disabled = true;
+
+    hideEl('dlError'); hideEl('audioResult'); hideEl('videoResult');
+    showEl('dlProgress');
+    resetStep(2); resetStep(3);
+
+    const body = { url, mode };
+    const referer = document.getElementById('refererInput').value.trim();
+    if (referer) body.referer = referer;
+
+    try {
+        const resp = await fetch(API + '/api/task', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
+        const data = await resp.json();
+        if (data.error) { showDlError(data.error); return; }
+        taskId = data.task_id;
+        pollStep1(mode);
+    } catch (e) {
+        showDlError('无法连接服务器');
+    }
+}
+
+function pollStep1(mode) {
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = setInterval(async () => {
+        const data = await getTask();
+        if (!data) return;
+
+        const { status, progress, message } = data;
+        document.getElementById('dlBar').style.width = progress + '%';
+        document.getElementById('dlPercent').textContent = progress + '%';
+        document.getElementById('dlMsg').textContent = message;
+        document.getElementById('dlStatus').textContent =
+            mode === 'video' ? '🎬 下载视频中...' : '🎵 下载音频中...';
+
+        if (status === 'audio_ready') {
+            clearInterval(pollTimer);
+            showAudioResult(data);
+            loadHistory();
+        } else if (status === 'video_ready') {
+            clearInterval(pollTimer);
+            showVideoResult(data);
+            loadHistory();
+        } else if (status === 'error') {
+            clearInterval(pollTimer);
+            showDlError(message);
+            loadHistory();
+        }
+    }, 1500);
+}
+
+function showAudioResult(data) {
+    hideEl('dlProgress'); hideEl('videoResult');
+    showEl('audioResult');
+    document.getElementById('step1Num').className = 'step-num done';
+    document.getElementById('step2Num').className = 'step-num active';
+
+    const dur = data.duration || 0;
+    document.getElementById('audioDuration').textContent = Math.round(dur / 60) + ' 分钟';
+
+    const audioFile = data.audio_file || '';
+    if (audioFile) {
+        document.getElementById('audioPlayer').src = API + '/api/files/' + audioFile;
+        document.getElementById('dlMp3').href = API + '/api/files/' + audioFile;
+        fetch(API + '/api/files/' + audioFile, { method: 'HEAD' }).then(r => {
+            const bytes = parseInt(r.headers.get('Content-Length') || 0);
+            document.getElementById('audioSize').textContent = formatSize(bytes);
+        });
+    }
+
+    document.getElementById('transBtn').disabled = false;
+    document.getElementById('step2Sub').textContent = '音频已就绪，点击开始转写';
+}
+
+function showVideoResult(data) {
+    hideEl('dlProgress'); hideEl('audioResult');
+    showEl('videoResult');
+    document.getElementById('step1Num').className = 'step-num done';
+
+    const videoFile = data.video_file || '';
+    if (videoFile) {
+        document.getElementById('videoPlayer').src = API + '/api/files/' + videoFile;
+        document.getElementById('dlMp4').href = API + '/api/files/' + videoFile;
+        fetch(API + '/api/files/' + videoFile, { method: 'HEAD' }).then(r => {
+            const bytes = parseInt(r.headers.get('Content-Length') || 0);
+            document.getElementById('videoSize').textContent = formatSize(bytes);
+        });
+    }
+}
+
+function showDlError(msg) {
+    hideEl('dlProgress');
+    showEl('dlError');
+    document.getElementById('dlError').textContent = msg;
+    const btn = document.getElementById('dlBtn');
+    const btnMp4 = document.getElementById('dlMp4Btn');
+    btn.disabled = false; btn.innerHTML = '🎵 下载 MP3';
+    btnMp4.disabled = false; btnMp4.innerHTML = '🎬 下载 MP4';
+    document.getElementById('urlInput').disabled = false;
+}
+
+// ========== 步骤 2：语音转文字 ==========
+async function startTranscribe() {
+    if (!taskId) return;
+    const btn = document.getElementById('transBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> 转写中...';
+    hideEl('trError');
+    showEl('trProgress');
+    resetStep(3);
+
+    try {
+        const url = API + '/api/task/' + taskId + '/transcribe';
+        const resp = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({})
+        });
+        if (!resp.ok) {
+            const errData = await resp.json().catch(() => ({}));
+            showTrError(errData.error || '请求失败 (' + resp.status + ')');
+            return;
+        }
+        const data = await resp.json();
+        if (data.error) { showTrError(data.error); return; }
+        pollStep2();
+    } catch (e) {
+        showTrError('请求失败: ' + e.message);
+    }
+}
+
+function pollStep2() {
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = setInterval(async () => {
+        const data = await getTask();
+        if (!data) return;
+
+        const { status, progress, message } = data;
+        document.getElementById('trBar').style.width = progress + '%';
+        document.getElementById('trPercent').textContent = progress + '%';
+        document.getElementById('trMsg').textContent = message;
+        document.getElementById('trStatus').textContent = '🤖 转写中...';
+
+        if (status === 'completed') {
+            clearInterval(pollTimer);
+            showTextResult(data);
+            loadHistory();
+        } else if (status === 'error') {
+            clearInterval(pollTimer);
+            showTrError(message);
+            loadHistory();
+        }
+    }, 2000);
+}
+
+function showTextResult(data) {
+    hideEl('trProgress');
+    document.getElementById('step2Num').className = 'step-num done';
+    document.getElementById('step3Num').className = 'step-num active';
+    document.getElementById('step2Sub').textContent = '✅ 转写完成';
+    document.getElementById('step3Sub').textContent = '可查看和下载逐字稿';
+    showEl('textResult');
+
+    const result = data.result || {};
+    document.getElementById('segCount').textContent = result.segments_count || 0;
+
+    const files = result.files || {};
+    if (files.summary) loadTabContent(files.summary, 'tab-summary', true);
+    if (files.markdown) loadTabContent(files.markdown, 'tab-transcript', true);
+    if (files.txt) loadTabContent(files.txt, 'tab-text', false);
+
+    setDlLink('dlMd', files.markdown);
+    setDlLink('dlSummary', files.summary);
+    setDlLink('dlSrt', files.srt);
+    setDlLink('dlTxt', files.txt);
+    setDlLink('dlMp3_2', files.mp3);
+}
+
+function showTrError(msg) {
+    hideEl('trProgress');
+    showEl('trError');
+    document.getElementById('trError').textContent = msg;
+    document.getElementById('transBtn').disabled = false;
+    document.getElementById('transBtn').innerHTML = '🤖 开始转写';
+}
+
+// ========== 通用 ==========
+async function getTask() {
+    try {
+        const resp = await fetch(API + '/api/task/' + taskId);
+        const data = await resp.json();
+        tasks[taskId] = data;
+        return data;
+    } catch { return null; }
+}
+
+async function loadTabContent(file, tabId, isMd) {
+    try {
+        const resp = await fetch(API + '/api/files/' + file);
+        let text = await resp.text();
+        if (isMd) text = renderMd(text);
+        document.getElementById(tabId).innerHTML = text;
+    } catch {
+        document.getElementById(tabId).innerHTML = '<p style="color:var(--error)">加载失败</p>';
+    }
+}
+
+function renderMd(t) {
+    return t
+        .replace(/^### (.*$)/gm, '<h3>$1</h3>')
+        .replace(/^## (.*$)/gm, '<h2>$1</h2>')
+        .replace(/^# (.*$)/gm, '<h1>$1</h1>')
+        .replace(/^> (.*$)/gm, '<blockquote>$1</blockquote>')
+        .replace(/^---$/gm, '<hr>')
+        .replace(/\*\[\d{2}:\d{2}\]\*\*/g, '<span class="timestamp">[$&]</span>')
+        .replace(/\*\*\[(\d{2}:\d{2})\]\*\*/g, '<span class="timestamp">[$1]</span>')
+        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+        .replace(/\*(.*?)\*/g, '<em>$1</em>')
+        .replace(/\n\n/g, '</p><p>')
+        .replace(/\n/g, '<br>');
+    return '<p>' + t + '</p>';
+}
+
+function switchTab(el, name) {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+    el.classList.add('active');
+    document.getElementById('tab-' + name).classList.add('active');
+}
+
+function setDlLink(id, file) {
+    const el = document.getElementById(id);
+    if (file) el.href = API + '/api/files/' + file;
+}
+
+function resetStep(n) {
+    const num = document.getElementById('step' + n + 'Num');
+    if (num) num.className = 'step-num';
+    if (n === 1) {
+        const btn = document.getElementById('dlBtn');
+        const btnMp4 = document.getElementById('dlMp4Btn');
+        btn.disabled = false; btn.innerHTML = '🎵 下载 MP3';
+        btnMp4.disabled = false; btnMp4.innerHTML = '🎬 下载 MP4';
+        document.getElementById('urlInput').disabled = false;
+        hideEl('dlProgress'); hideEl('dlError'); hideEl('audioResult'); hideEl('videoResult');
+    }
+    if (n === 2) {
+        document.getElementById('transBtn').disabled = true;
+        document.getElementById('transBtn').innerHTML = '🤖 开始转写';
+        document.getElementById('step2Sub').textContent = '请先下载音频（步骤1）';
+        hideEl('trProgress'); hideEl('trError');
+    }
+    if (n === 3) {
+        hideEl('textResult');
+        document.getElementById('step3Sub').textContent = '等待转写完成';
+    }
+}
+
+function showEl(id) { document.getElementById(id).classList.add('show'); }
+function hideEl(id) { document.getElementById(id).classList.remove('show'); }
+
+function toggleAdvanced() {
+    document.getElementById('advancedBox').classList.toggle('show');
+}
+
+function formatSize(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
+// Enter 提交
+document.getElementById('urlInput').addEventListener('keydown', e => {
+    if (e.key === 'Enter') startDownload('audio');
+});
+
+// 初始化
+loadHistory();
+</script>
+
+</body>
+</html>

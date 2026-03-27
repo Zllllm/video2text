@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  video2text:
+    build: .
+    ports:
+      - "8899:8899"
+    volumes:
+      - ./output:/app/output
+    environment:
+      - WHISPER_MODEL=medium
+      # 启用 Groq 极速模式（取消注释并填入 API Key）
+      # - ASR_ENGINE=groq
+      # - GROQ_API_KEY=your_groq_api_key_here
+    restart: unless-stopped
